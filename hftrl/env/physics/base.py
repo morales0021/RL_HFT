@@ -7,7 +7,7 @@ from typing import Any
 
 class TradingEng(gym.Env):
 
-    metadata = {"render_modes":["ansi"]}
+    metadata = {"render_modes":["human"]}
 
     def __init__(self, config):
         

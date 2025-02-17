@@ -23,11 +23,14 @@ class SimpleEnv(TradingEng):
         self.action_space = config["action_space"]
         self.observation_space = config["observation_space"]
         self.trading_days = config["trading_days"]
+        self.tick_unit = config['tick_unit']
         self.comission_cfg = config["commission_cfg"]
         self.redis_host = config["redis_host"]
         self.redis_port = config["redis_port"]
         self.tick_decimal = config["tick_decimal"]
         self.ticker = config["ticker"]
+        self.tp = config['tp']
+        self.sl = config['sl']
         self.suffix_ticker = config["suffix_ticker"]
 
         self.max_size = config["max_size"]
@@ -76,15 +79,18 @@ class SimpleEnv(TradingEng):
         return new_obs, reward, is_done, is_done, info
     
     def _process_action(self, action):
-        
         size = action["size"].item()
 
         if action["market_order"] == 0:
-            self._ps.send_market_order(SideOrder.sell, size)
+            tp = self._snapshot.bid - self.tp*self.tick_unit
+            sl = self._snapshot.ask + self.sl*self.tick_unit
+            self._ps.send_market_order(SideOrder.sell, size, tp = tp, sl = sl)
         elif action["market_order"] == 1:
             pass
         elif action["market_order"] == 2:
-            self._ps.send_market_order(SideOrder.buy, size)
+            tp = self._snapshot.ask + self.tp*self.tick_unit
+            sl = self._snapshot.bid - self.sl*self.tick_unit
+            self._ps.send_market_order(SideOrder.buy, size, tp = tp, sl = sl)
 
         # update the snapshot
         # update the position manager
@@ -166,24 +172,10 @@ class SimpleEnv(TradingEng):
         
         infos = self._ps.get_infos()
         clpnl = get_total_pnl(infos, closed = True)
-        oppnl = get_total_pnl(infos, closed = False)
-        if not self.prev_clpnl:
-            self.prev_clpnl = clpnl
+
         # Reward for profit
-        # if clpnl>0:
-        #     tot_pnl = 0.01
-        # elif clpnl == 0:
-        #     tot_pnl =0.0
-        # else:
-        #     tot_pnl = -0.01
 
-        tot_pnl = clpnl - self.prev_clpnl
-        # Penalisation for many opened positions
-        #tot_op_pos = -1*len(infos['closed_orders'])*0.001
-        #tot = tot_pnl + tot_op_pos
-        self.prev_clpnl = clpnl
-
-        return tot_pnl
+        return clpnl
 
     def _process_dones(self):
 

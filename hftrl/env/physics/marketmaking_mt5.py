@@ -12,13 +12,14 @@ from futsimulator.indicators.price import CurrentPrice
 from futsimulator.indicators.positions import CurrentPositions
 from futsimulator.utils.plotting import get_plot
 from hftrl.env.utils.dategeneration import get_random_date
+from futsimulator.market.mt5snapshots import MT5Snapshot
 import talib
 from talib import stream
 from collections import deque
 import os
 import pdb
 
-class SimpleEnv(TradingEng):
+class MarketMakingEnv(TradingEng):
 
     def __init__(self, config):
 
@@ -29,7 +30,7 @@ class SimpleEnv(TradingEng):
         self.comission_cfg = config["commission_cfg"]
         self.redis_host = config["redis_host"]
         self.redis_port = config["redis_port"]
-        self.tick_decimal = config["tick_decimal"]
+        self.decimal_time = config["decimal_time"]
         self.ticker = config["ticker"]
         self.suffix_ticker = config["suffix_ticker"]
         self.unit_tick = config["unit_tick"]
@@ -47,7 +48,6 @@ class SimpleEnv(TradingEng):
         self._hist_vol_sell = deque(maxlen = 100)
         self._hist_vol_buy = deque(maxlen = 100)
 
-
         # position manager instance
         self._ps = None
         # snapshot instance
@@ -55,13 +55,12 @@ class SimpleEnv(TradingEng):
         # index date instance
         self.idx_date_day = IndexDateDay(
             prefix = self.ticker, suffix = self.suffix_ticker,
-            host = self.redis_host, port = self.redis_port)
+            host = self.redis_host, port = self.redis_port,
+            decimal_time=self.decimal_time)
         
-
         # Render information
         self.profit_clpnl = []
         self.profit_opnl = []
-
         self.prev_clpnl = None
 
     def step(self, action):
@@ -117,13 +116,14 @@ class SimpleEnv(TradingEng):
     def update_until_new_second(self):
         """
         Update the snapshot and the position manager until a new second
+        It also appends historical data that will be used for the indicators
         """
         tot_vol_buy = 0
         tot_vol_sell = 0
 
         high = 0
         low = 999999999
-        open = self._snapshot.last
+        open = self._snapshot.price
 
         old_second = self._snapshot.datetime.second
 
@@ -134,7 +134,7 @@ class SimpleEnv(TradingEng):
                 tot_vol_sell += self._snapshot.size
             elif self._snapshot.side == 'b':
                 tot_vol_buy += self._snapshot.size
-            last_price = self._snapshot.last
+            last_price = self._snapshot.price
  
             if last_price > high:
                 high = last_price
@@ -163,7 +163,6 @@ class SimpleEnv(TradingEng):
         opnl = np.array(info_pos['open_orders']['o_pnl'])
         cpnl = np.array(info_pos['cl_pnl'])
 
-
         indicators = {
             "ma_price_5": np.array(self.ma_5),
             "ma_price_10":  np.array(self.ma_10),
@@ -178,7 +177,6 @@ class SimpleEnv(TradingEng):
             "sell_pos": sell_pos,
             "opnl": opnl,
             "cpnl": cpnl
-
             }
         
         return indicators
@@ -189,25 +187,18 @@ class SimpleEnv(TradingEng):
             self._ps.liquidate()
         
         infos = self._ps.get_infos()
-        clpnl = get_total_pnl(infos, closed = True)
-        oppnl = get_total_pnl(infos, closed = False)
+        clpnl = infos['cl_pnl']
+        oppnl = infos['open_orders']['o_pnl']
+
         if not self.prev_clpnl:
             self.prev_clpnl = clpnl
-        # Reward for profit
-        # if clpnl>0:
-        #     tot_pnl = 0.01
-        # elif clpnl == 0:
-        #     tot_pnl =0.0
-        # else:
-        #     tot_pnl = -0.01
 
         tot_pnl = clpnl - self.prev_clpnl
+
         # Penalisation for many opened positions
-        #tot_op_pos = -1*len(infos['closed_orders'])*0.001
-        #tot = tot_pnl + tot_op_pos
         self.prev_clpnl = clpnl
 
-        return tot_pnl
+        return tot_pnl + oppnl
 
     def _process_dones(self):
 
@@ -222,54 +213,43 @@ class SimpleEnv(TradingEng):
         operations
         """
         start_time_preload, start_time, end_time = get_random_date(**self.trading_days)
-
-        profile = VolumeProfile(self.side_lad,self.side_lad,1/32)
-
-        bid_sold = TradedVolume(
-             size_up = self.side_lad, size_down=self.side_lad, tick_unit = 1/32,
-             type = 'A', seconds = 10)
-        
-        ask_bought = TradedVolume(
-             size_up = self.side_lad, size_down=self.side_lad, tick_unit = 1/32,
-             type = 'B', seconds = 10)
-        
-        current_price = CurrentPrice(
-            size_up = self.side_lad, size_down=self.side_lad, tick_unit = 1/32)
-
-        current_pos = CurrentPositions(
-            size_up = self.side_lad, size_down=self.side_lad, tick_unit = 1/32)
-
-        indicators = {
-            'bid_sold': bid_sold,
-            'ask_bought': ask_bought,
-            'profile': profile,
-            'current_price': current_price
-            }
-        
-        self._snapshot = TBBOSnapshot(
-            self.redis_host, self.redis_port, decimal = self.tick_decimal,
-            idx_date_day = self.idx_date_day, start_time = start_time, end_time = end_time,
-            indicators = indicators, start_time_preload = start_time_preload
+        # Snapshot instance
+        self._snapshot = MT5Snapshot(
+            host = self.redis_host,
+            port = self.redis_port,
+            idx_date_day = self.idx_date_day,
+            start_time = start_time,
+            end_time = end_time,
+            start_time_preload = start_time_preload
             )
         
-        indicators_manager = {"current_pos":current_pos}
-        
+        # Position manager instance
         self._ps = PositionManager(
-            self._snapshot, self.max_size, self.comission_cfg,
-            indicators = indicators_manager
+            self._snapshot, self.max_open_pos, self.comission_cfg,
+            indicators = {}
             )
+        
+        # Historical datafor indicators
+        self._hist_last_price = deque(maxlen = 100)
+        self._hist_open_price = deque(maxlen = 100)
+        self._hist_high_price = deque(maxlen = 100)
+        self._hist_low_price = deque(maxlen = 100)
+        self._hist_vol_sell = deque(maxlen = 100)
+        self._hist_vol_buy = deque(maxlen = 100)
 
-        observation = self._process_obs(self.obs_args)
+        for k in range(50):
+            self.update_until_new_second()
+            #print(self.ma_50)
+        
+        observation = self._process_obs()
         infos = {}
-        self.reset_render()
-        self.prev_clpnl = None
 
-        return observation, infos
-
-    def reset_render(self):
-
+        # Reset render
         self.profit_clpnl = []
         self.profit_opnl = []
+        self.prev_clpnl = None
+        print(observation)
+        return observation, infos
 
     def render_custom(self, iter_val: int = None):
         """
@@ -298,51 +278,55 @@ class SimpleEnv(TradingEng):
 
 
     def _compute_indicators(self):
+
         # Indicators
+        if len(self._hist_last_price) < 50:
+            return
+
         self.ma_5 = stream.SMA(
-            np.fromiter(self._hist_last_price),
+            np.fromiter(self._hist_last_price, float),
             timeperiod=5
-            )
+            ) - self._hist_last_price[-1]
         
         self.ma_10 = stream.SMA(
-            np.fromiter(self._hist_last_price),
+            np.fromiter(self._hist_last_price, float),
             timeperiod=10
-            )
+            ) - self._hist_last_price[-1]
         
         self.ma_20 = stream.SMA(
-            np.fromiter(self._hist_last_price),
+            np.fromiter(self._hist_last_price, float),
             timeperiod=20
-            )
+            ) - self._hist_last_price[-1]
         
         self.ma_50 = stream.SMA(
-            np.fromiter(self._hist_last_price),
+            np.fromiter(self._hist_last_price, float),
             timeperiod=50
-            )
-
+            ) - self._hist_last_price[-1]
+        
         self.atr_5 = stream.NATR(
-            np.fromiter(self._hist_high_price),
-            np.fromiter(self._hist_low_price),
-            np.fromiter(self._hist_last_price),
+            np.fromiter(self._hist_high_price, float),
+            np.fromiter(self._hist_low_price, float),
+            np.fromiter(self._hist_last_price, float),
             timeperiod=5
             )
 
         self.atr_10 = stream.NATR(
-            np.fromiter(self._hist_high_price),
-            np.fromiter(self._hist_low_price),
-            np.fromiter(self._hist_last_price),
+            np.fromiter(self._hist_high_price, float),
+            np.fromiter(self._hist_low_price, float),
+            np.fromiter(self._hist_last_price, float),
             timeperiod=5
             )
         
         self.atr_20 = stream.NATR(
-            np.fromiter(self._hist_high_price),
-            np.fromiter(self._hist_low_price),
-            np.fromiter(self._hist_last_price),
+            np.fromiter(self._hist_high_price, float),
+            np.fromiter(self._hist_low_price, float),
+            np.fromiter(self._hist_last_price, float),
             timeperiod=5
             )
         
         self.atr_50 = stream.NATR(
-            np.fromiter(self._hist_high_price),
-            np.fromiter(self._hist_low_price),
-            np.fromiter(self._hist_last_price),
+            np.fromiter(self._hist_high_price, float),
+            np.fromiter(self._hist_low_price, float),
+            np.fromiter(self._hist_last_price, float),
             timeperiod=5
             )

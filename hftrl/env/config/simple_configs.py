@@ -38,3 +38,4 @@ class ConfigMarketMakingEnv(BaseModel):
     unit_tick: float
     enable_render: bool = Field(default = False, description = "Enable the rendering during evaluation")
     path_render: str = Field(description = "The path were the evaluation will be saved")
+    mt5_reader: Any

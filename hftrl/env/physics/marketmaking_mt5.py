@@ -1,15 +1,9 @@
 import random
 import numpy as np
 from hftrl.env.physics.base import TradingEng
-from futsimulator.market.redissnapshots import TBBOSnapshot
 from futsimulator.manager.manager import PositionManager
-from futsimulator.interfaces.redisindex import IndexDateDay
 from futsimulator.positions.position import SideOrder
 from futsimulator.utils.performance import get_total_pnl
-from futsimulator.indicators.profile import VolumeProfile
-from futsimulator.indicators.traded_vol import TradedVolume
-from futsimulator.indicators.price import CurrentPrice
-from futsimulator.indicators.positions import CurrentPositions
 from futsimulator.utils.plotting import get_plot
 from hftrl.env.utils.dategeneration import get_random_date
 from futsimulator.market.mt5snapshots import MT5Snapshot
@@ -53,10 +47,7 @@ class MarketMakingEnv(TradingEng):
         # snapshot instance
         self._snapshot = None
         # index date instance
-        self.idx_date_day = IndexDateDay(
-            prefix = self.ticker, suffix = self.suffix_ticker,
-            host = self.redis_host, port = self.redis_port,
-            decimal_time=self.decimal_time)
+        self.mt5_reader = config["mt5_reader"]
         
         # Render information
         self.profit_clpnl = []
@@ -94,24 +85,44 @@ class MarketMakingEnv(TradingEng):
         pos_type = portfolio_state['open_orders']['side']
 
         # If many opened position, only open one opposite limit order
-        if opened_pos == self.max_open_pos:
+        if opened_pos >= self.max_open_pos:
             if pos_type == SideOrder.buy:
-                self._ps.send_limit_order(SideOrder.sell, sell_limit_order_price, 1)
+                self._ps.send_limit_order(
+                    price = sell_limit_order_price,
+                    side = SideOrder.sell,
+                    size = 1
+                    )
             elif pos_type == SideOrder.sell:
-                self._ps.send_limit_order(SideOrder.buy, buy_limit_order_price, 1)
+                self._ps.send_limit_order(
+                    price = buy_limit_order_price,
+                    side = SideOrder.buy,
+                    size = 1)
             else:
                 raise Exception("Wrong position type")
 
             # update until a new second
-            self.update_until_new_second()
+            self.update_until_new_cycle()
             return
         
         # Send both limit orders        
-        self._ps.send_limit_order(SideOrder.sell, sell_limit_order_price, 1)
-        self._ps.send_limit_order(SideOrder.buy, buy_limit_order_price, 1)
-
+        self._ps.send_limit_order(
+            price = sell_limit_order_price,
+            side = SideOrder.sell,
+            size = 1
+        )
+        
+        self._ps.send_limit_order(
+            price = buy_limit_order_price, 
+            side = SideOrder.buy,
+            size = 1
+        )
         # update until a new second
-        self.update_until_new_second()
+        self.update_until_new_cycle()
+
+    def update_until_new_cycle(self, cycle_secs = 60):
+
+        for k in range(cycle_secs):
+            self.update_until_new_second()
 
     def update_until_new_second(self):
         """
@@ -128,8 +139,7 @@ class MarketMakingEnv(TradingEng):
         old_second = self._snapshot.datetime.second
 
         while self._snapshot.datetime.second == old_second:
-            self._snapshot.update()
-            self._ps.update()
+            self._ps.step()
             if self._snapshot.side == 's':
                 tot_vol_sell += self._snapshot.size
             elif self._snapshot.side == 'b':
@@ -212,15 +222,15 @@ class MarketMakingEnv(TradingEng):
         Creates a new position manager that handles all the 
         operations
         """
-        start_time_preload, start_time, end_time = get_random_date(**self.trading_days)
+        _, start_time, end_time = get_random_date(**self.trading_days)
         # Snapshot instance
         self._snapshot = MT5Snapshot(
             host = self.redis_host,
             port = self.redis_port,
-            idx_date_day = self.idx_date_day,
+            symbol = self.ticker,
+            mt5_reader=self.mt5_reader,
             start_time = start_time,
             end_time = end_time,
-            start_time_preload = start_time_preload
             )
         
         # Position manager instance
@@ -237,9 +247,7 @@ class MarketMakingEnv(TradingEng):
         self._hist_vol_sell = deque(maxlen = 100)
         self._hist_vol_buy = deque(maxlen = 100)
 
-        for k in range(50):
-            self.update_until_new_second()
-            #print(self.ma_50)
+        self.update_until_new_cycle()
         
         observation = self._process_obs()
         infos = {}

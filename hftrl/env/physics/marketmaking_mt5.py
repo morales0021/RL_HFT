@@ -6,7 +6,10 @@ from futsimulator.positions.position import SideOrder
 from futsimulator.utils.performance import get_total_pnl
 from futsimulator.utils.plotting import get_plot
 from hftrl.env.utils.dategeneration import get_random_date
+from futsimulator.data_readers.mt5_redis import MT5RedisReader
 from futsimulator.market.mt5snapshots import MT5Snapshot
+from hftrl.env.tracker.tracker import Tracker
+from hftrl.env.rewards.reward_manager import RewardManager
 import talib
 from talib import stream
 from collections import deque
@@ -47,16 +50,24 @@ class MarketMakingEnv(TradingEng):
         # snapshot instance
         self._snapshot = None
         # index date instance
-        self.mt5_reader = config["mt5_reader"]
+        self.mt5_reader = MT5RedisReader(
+            host_redis=self.redis_host,
+            port_redis=self.redis_port,
+            identifier='EP'
+        )
         
         # Render information
         self.profit_clpnl = []
         self.profit_opnl = []
         self.prev_clpnl = None
+        self.cycles = 0
+        self.tracker = Tracker(self.config['tracker'])
+        self.rwd_manager = RewardManager(self.config['rwd_manager'])
 
     def step(self, action):
 
         self._process_action(action)
+        self.tracker.update_all(self._ps)
 
         reward = self._process_reward()
         new_obs = self._process_obs()
@@ -123,6 +134,7 @@ class MarketMakingEnv(TradingEng):
 
         for k in range(cycle_secs):
             self.update_until_new_second()
+        self.cycles += 1
 
     def update_until_new_second(self):
         """
@@ -166,22 +178,22 @@ class MarketMakingEnv(TradingEng):
     def _process_obs(self):
 
         info_pos = self._ps.get_infos()
-
-        size_pos = np.array(info_pos['open_orders']['total_size']),
-        buy_pos = np.array(info_pos['open_orders']['side'] == SideOrder.buy)
-        sell_pos = np.array(info_pos['open_orders']['side'] == SideOrder.sell)
-        opnl = np.array(info_pos['open_orders']['o_pnl'])
-        cpnl = np.array(info_pos['cl_pnl'])
+        # pdb.set_trace()
+        size_pos = np.array([info_pos['open_orders']['total_size']])
+        buy_pos = np.array([info_pos['open_orders']['side'] == SideOrder.buy])
+        sell_pos = np.array([info_pos['open_orders']['side'] == SideOrder.sell])
+        opnl = np.array([info_pos['open_orders']['o_pnl']])
+        cpnl = np.array([info_pos['cl_pnl']])
 
         indicators = {
-            "ma_price_5": np.array(self.ma_5),
-            "ma_price_10":  np.array(self.ma_10),
-            "ma_price_20":  np.array(self.ma_20),
-            "ma_price_50":  np.array(self.ma_50),
-            "natr_5": np.array(self.atr_5),
-            "natr_10": np.array(self.atr_10),
-            "natr_20": np.array(self.atr_20),
-            "natr_50": np.array(self.atr_50),
+            "ma_price_5": np.array([self.ma_5]),
+            "ma_price_10":  np.array([self.ma_10]),
+            "ma_price_20":  np.array([self.ma_20]),
+            "ma_price_50":  np.array([self.ma_50]),
+            "natr_5": np.array([self.atr_5]),
+            "natr_10": np.array([self.atr_10]),
+            "natr_20": np.array([self.atr_20]),
+            "natr_50": np.array([self.atr_50]),
             "size_pos": size_pos,
             "buy_pos": buy_pos,
             "sell_pos": sell_pos,
@@ -195,22 +207,30 @@ class MarketMakingEnv(TradingEng):
 
         if self._snapshot.rl.finished:
             self._ps.liquidate()
+
+
+        rwd = self.rwd_manager.get_reward(self._ps, self.tracker)
+
+        return rwd
+        
+        # infos = self._ps.get_infos()
+        # clpnl = infos['cl_pnl']
+        # oppnl = infos['open_orders']['o_pnl']
+
+        # if not self.prev_clpnl:
+        #     self.prev_clpnl = clpnl
+
+        # tot_pnl = clpnl - self.prev_clpnl
+
+        # # Penalisation for many opened positions
+        # self.prev_clpnl = clpnl
+
+        # return tot_pnl + 0.2*oppnl
+
+    def _process_dones(self):
         
         infos = self._ps.get_infos()
         clpnl = infos['cl_pnl']
-        oppnl = infos['open_orders']['o_pnl']
-
-        if not self.prev_clpnl:
-            self.prev_clpnl = clpnl
-
-        tot_pnl = clpnl - self.prev_clpnl
-
-        # Penalisation for many opened positions
-        self.prev_clpnl = clpnl
-
-        return tot_pnl + oppnl
-
-    def _process_dones(self):
 
         if self._snapshot.rl.finished:
             return True
@@ -232,7 +252,6 @@ class MarketMakingEnv(TradingEng):
             start_time = start_time,
             end_time = end_time,
             )
-        
         # Position manager instance
         self._ps = PositionManager(
             self._snapshot, self.max_open_pos, self.comission_cfg,
@@ -256,7 +275,7 @@ class MarketMakingEnv(TradingEng):
         self.profit_clpnl = []
         self.profit_opnl = []
         self.prev_clpnl = None
-        print(observation)
+        self.cycles = 0
         return observation, infos
 
     def render_custom(self, iter_val: int = None):
@@ -264,8 +283,11 @@ class MarketMakingEnv(TradingEng):
         This is a custom render method.
         """
         infos = self._ps.get_infos()
-        clpnl = get_total_pnl(infos, closed = True)
-        oppnl = get_total_pnl(infos, closed = False)
+        clpnl = infos['cl_pnl']
+        oppnl = infos['open_orders']['o_pnl']
+
+        # clpnl = get_total_pnl(infos, closed = True)
+        # oppnl = get_total_pnl(infos, closed = False)
         # if abs(oppnl) > 50:
         #     pdb.set_trace()
         self.profit_clpnl.append(clpnl)

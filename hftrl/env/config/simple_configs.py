@@ -28,6 +28,8 @@ class ConfigMarketMakingEnv(BaseModel):
     trading_days: dict = Field(
         default = None, description = "dictionary for datetime generation")
     tick_unit: float = Field(default = None, description = "Precise the tick unit for the future price")
+    rwd_manager: dict
+    tracker: dict
     commission_cfg: dict
     redis_host: str
     redis_port: int

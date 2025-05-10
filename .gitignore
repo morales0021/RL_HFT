@@ -6,3 +6,6 @@ __pycache__
 hftrl.egg-info/
 *.json
 *.pkl
+
+checkpoint/
+evaluations/

@@ -18,7 +18,7 @@ Experiment with market-making strategies
 
 To simulate a high-frequency trading environment, please refer to the following project:
 
-👉 HFT Trading Environment(Link to be added)
+👉 HFT Trading Environment https://github.com/morales0021/HFT_Futures_Simulator_Engine/tree/develop
 
 📂 Example Training Workflows
 

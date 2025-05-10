@@ -41,3 +41,4 @@ class ConfigMarketMakingEnv(BaseModel):
     enable_render: bool = Field(default = False, description = "Enable the rendering during evaluation")
     path_render: str = Field(description = "The path were the evaluation will be saved")
     mt5_reader: Any
+    is_eval: bool = Field(description = "Shows if is the evaluation mode")

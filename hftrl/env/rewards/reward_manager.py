@@ -3,7 +3,6 @@ class RewardManager:
 
     def __init__(self, reward_config):
         self.reward_config = reward_config
-        self.reward = None
         self.rwd_info = reward_config['weights']
         self.rwd_keys = reward_config['weights'].keys()
 
@@ -18,5 +17,6 @@ class RewardManager:
 
         if 'o_pnl' in self.rwd_keys:
             tot_rwd['o_pnl'] = self.rwd_info['o_pnl'] * infos['open_orders']['o_pnl']
-
+        # print(tot_rwd)
+        # print(infos['cl_pnl'])
         return sum(tot_rwd.values())

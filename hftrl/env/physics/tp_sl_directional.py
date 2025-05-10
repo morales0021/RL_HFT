@@ -17,7 +17,7 @@ from collections import deque
 import os
 import pdb
 
-class MarketMakingEnv(TradingEng):
+class TpSlDirectionalEnv(TradingEng):
 
     def __init__(self, config):
 
@@ -38,14 +38,6 @@ class MarketMakingEnv(TradingEng):
         self.enable_render= config['enable_render']
         self.path_render = config["path_render"]
         
-        # Historical datafor indicators        
-        # self._hist_last_price = deque(maxlen = 100)
-        # self._hist_open_price = deque(maxlen = 100)
-        # self._hist_high_price = deque(maxlen = 100)
-        # self._hist_low_price = deque(maxlen = 100)
-        # self._hist_vol_sell = deque(maxlen = 100)
-        # self._hist_vol_buy = deque(maxlen = 100)
-
         # position manager instance
         self._ps = None
         # snapshot instance
@@ -65,23 +57,28 @@ class MarketMakingEnv(TradingEng):
         self.tracker = Tracker(self.config['tracker'])
         self.rwd_manager = RewardManager(self.config['rwd_manager'])
         self.obs_manager = ObsManager(self.observation_space)
+        self.start_time = None
+        self.end_time = None
+        self.is_eval = self.config['is_eval']
 
     def _preprocess_action(self, action):
         """
         Preprocess the action to be used in the step method
         """
         action = {
-            "spread_limit_buy": action[0],
-            "spread_limit_sell": action[1]
+            "tp": action[0],
+            "sl": action[1],
+            "action_type": action[2],
         }
         return action
 
     def step(self, action):
 
         action = self._preprocess_action(action)
-
         self._process_action(action)
         self.tracker.update_hist_clpnl(self._ps.get_infos())
+        # if self.cycles > 1000:
+        #     print(f"Cycles reached 1000 for {self.start_time} and {self.end_time}") 
 
         reward = self._process_reward()
         new_obs = self._process_obs()
@@ -91,58 +88,66 @@ class MarketMakingEnv(TradingEng):
         if self.enable_render:
             self.render_custom()
 
-        return new_obs, reward, is_done, is_done, info
+        if self.cycles >  60:
+            is_truncated = True
+        else:
+            is_truncated = False
+
+        self.total_reward += reward
+        if is_done or is_truncated:
+            if self.is_eval:
+                print("Evaluation")
+            if not self.is_eval:
+                print("Training")
+            print(f"Done/truncated for {self.start_time} and {self.end_time}, with cycles {self.cycles}")
+            print(f"Total Reward: {self.total_reward}")
+
+        # if self.total_reward > 100:
+        #     pdb.set_trace()
+            
+        return new_obs, reward, is_done, is_truncated, info
     
     def _process_action(self, action):
-        
-        # Cancel all orders if there any limit orders opened
-        self._ps.cancel_all()
-
-        # Send new limit orders
-        ask_price = self._snapshot.ask
-        bid_price = self._snapshot.bid
-
-        buy_limit_order_price = bid_price - action['spread_limit_buy']*self.unit_tick
-        sell_limit_order_price = ask_price + action['spread_limit_sell']*self.unit_tick
-
-        portfolio_state = self._ps.get_infos()
-        opened_pos = portfolio_state['open_orders']['total_size']
-        pos_type = portfolio_state['open_orders']['side']
-
-        # If many opened position, only open one opposite limit order
-        if opened_pos >= self.max_open_pos:
-            if pos_type == SideOrder.buy:
-                self._ps.send_limit_order(
-                    price = sell_limit_order_price,
-                    side = SideOrder.sell,
-                    size = 1
-                    )
-            elif pos_type == SideOrder.sell:
-                self._ps.send_limit_order(
-                    price = buy_limit_order_price,
-                    side = SideOrder.buy,
-                    size = 1)
+        """
+        actions 
+            - TP Range
+            - SL Range
+            - Do nothing, Liquidate, Buy, Sell
+        """
+        # Do nothing, keep previous position running
+        # if action['action_type'] == 0:
+        #     self.update_until_new_cycle()
+        #     return
+        # Liquidate the current position
+        # if action['action_type'] == 0:
+        #     self._ps.liquidate()
+        #     self._ps.cancel_all()
+        #     self.update_until_new_cycle()
+        #     return
+        # Send market order, but liquidate all opened orders first
+        if action['action_type'] == 1 or action['action_type'] == 2:
+            self._ps.liquidate()
+            self._ps.cancel_all()
+            # buy
+            if action['action_type'] == 1:
+                tp = self._snapshot.ask + action['tp']*self.unit_tick 
+                sl = self._snapshot.ask - action['sl']*self.unit_tick
+                side = SideOrder.buy
+            # sell
+            elif action['action_type'] == 2:
+                tp = self._snapshot.bid - action['tp']*self.unit_tick
+                sl = self._snapshot.bid + action['sl']*self.unit_tick
+                side = SideOrder.sell
             else:
-                raise Exception("Wrong position type")
-
-            # update until a new second
+                raise Exception("Wrong action type")
+            self._ps.send_market_order(
+                side = side,
+                tp = tp,
+                sl = sl,
+                size = 1
+            )
             self.update_until_new_cycle()
             return
-        
-        # Send both limit orders        
-        self._ps.send_limit_order(
-            price = sell_limit_order_price,
-            side = SideOrder.sell,
-            size = 1
-        )
-        
-        self._ps.send_limit_order(
-            price = buy_limit_order_price, 
-            side = SideOrder.buy,
-            size = 1
-        )
-        # update until a new second
-        self.update_until_new_cycle()
 
     def update_until_new_cycle(self, cycle_secs = 60):
 
@@ -178,7 +183,6 @@ class MarketMakingEnv(TradingEng):
                 low = last_price
 
         # Append the aggregated volume of the last second
-
         self.tracker.update_hist_vol_sell(tot_vol_sell)
         self.tracker.update_hist_vol_buy(tot_vol_buy)
         self.tracker.update_hist_last_price(last_price)
@@ -186,72 +190,23 @@ class MarketMakingEnv(TradingEng):
         self.tracker.update_hist_high_price(high)
         self.tracker.update_hist_low_price(low)
 
-        # self._hist_vol_sell.append(tot_vol_sell)
-        # self._hist_vol_buy.append(tot_vol_buy)
-        
-        # # Create historical pipes of last, high, low and open prices
-        # self._hist_last_price.append(last_price)
-        # self._hist_high_price.append(high)
-        # self._hist_low_price.append(low)
-        # self._hist_open_price.append(open)
-
-        # self._compute_indicators()
-
     def _process_obs(self):
 
         obs = self.obs_manager.get_obs(self._ps, self.tracker)
 
         return obs
-    
-        # info_pos = self._ps.get_infos()
-        # # pdb.set_trace()
-        # size_pos = np.array([info_pos['open_orders']['total_size']])
-        # buy_pos = np.array([info_pos['open_orders']['side'] == SideOrder.buy])
-        # sell_pos = np.array([info_pos['open_orders']['side'] == SideOrder.sell])
-        # opnl = np.array([info_pos['open_orders']['o_pnl']])
-        # cpnl = np.array([info_pos['cl_pnl']])
-
-        # indicators = {
-        #     "ma_price_5": np.array([self.ma_5]),
-        #     "ma_price_10":  np.array([self.ma_10]),
-        #     "ma_price_20":  np.array([self.ma_20]),
-        #     "ma_price_50":  np.array([self.ma_50]),
-        #     "natr_5": np.array([self.atr_5]),
-        #     "natr_10": np.array([self.atr_10]),
-        #     "natr_20": np.array([self.atr_20]),
-        #     "natr_50": np.array([self.atr_50]),
-        #     "size_pos": size_pos,
-        #     "buy_pos": buy_pos,
-        #     "sell_pos": sell_pos,
-        #     "opnl": opnl,
-        #     "cpnl": cpnl
-        #     }
-        
-        # return indicators
 
     def _process_reward(self):
 
         if self._snapshot.rl.finished:
             self._ps.liquidate()
+        elif self.cycles > 60:
+            self._ps.liquidate()
 
-        rwd = self.rwd_manager.get_reward(self._ps, self.tracker)
+        rwd = self.rwd_manager.get_reward(self._ps, self.tracker, self.cumulated_clpnl, self.cumulated_opnl)
 
         return rwd
         
-        # infos = self._ps.get_infos()
-        # clpnl = infos['cl_pnl']
-        # oppnl = infos['open_orders']['o_pnl']
-
-        # if not self.prev_clpnl:
-        #     self.prev_clpnl = clpnl
-
-        # tot_pnl = clpnl - self.prev_clpnl
-
-        # # Penalisation for many opened positions
-        # self.prev_clpnl = clpnl
-
-        # return tot_pnl + 0.2*oppnl
-
     def _process_dones(self):
         
         trading_infos = self._ps.get_infos()
@@ -272,15 +227,15 @@ class MarketMakingEnv(TradingEng):
         Creates a new position manager that handles all the 
         operations
         """
-        _, start_time, end_time = get_random_date(**self.trading_days)
+        _, self.start_time, self.end_time = get_random_date(**self.trading_days)
         # Snapshot instance
         self._snapshot = MT5Snapshot(
             host = self.redis_host,
             port = self.redis_port,
             symbol = self.ticker,
             mt5_reader=self.mt5_reader,
-            start_time = start_time,
-            end_time = end_time,
+            start_time = self.start_time,
+            end_time = self.end_time,
             )
         # Position manager instance
         self._ps = PositionManager(
@@ -290,12 +245,6 @@ class MarketMakingEnv(TradingEng):
         
         # Historical datafor indicators
         self.tracker.reset()
-        # self._hist_last_price = deque(maxlen = 100)
-        # self._hist_open_price = deque(maxlen = 100)
-        # self._hist_high_price = deque(maxlen = 100)
-        # self._hist_low_price = deque(maxlen = 100)
-        # self._hist_vol_sell = deque(maxlen = 100)
-        # self._hist_vol_buy = deque(maxlen = 100)
 
         self.update_until_new_cycle()
         
@@ -307,6 +256,9 @@ class MarketMakingEnv(TradingEng):
         self.profit_opnl = []
         self.prev_clpnl = None
         self.cycles = 0
+        self.total_reward = 0
+        self.cumulated_clpnl = []
+        self.cumulated_opnl = []
         return observation, infos
 
     def render_custom(self, iter_val: int = None):
@@ -337,58 +289,3 @@ class MarketMakingEnv(TradingEng):
             os.makedirs(directory, exist_ok=True)
             pathfile = os.path.join(directory,f"iter_{iter_val}.png")
             get_plot(infos, "index", "profit", "performance", pathfile)
-
-
-    # def _compute_indicators(self):
-
-    #     # Indicators
-    #     if len(self._hist_last_price) < 50:
-    #         return
-
-    #     self.ma_5 = stream.SMA(
-    #         np.fromiter(self._hist_last_price, float),
-    #         timeperiod=5
-    #         ) - self._hist_last_price[-1]
-        
-    #     self.ma_10 = stream.SMA(
-    #         np.fromiter(self._hist_last_price, float),
-    #         timeperiod=10
-    #         ) - self._hist_last_price[-1]
-        
-    #     self.ma_20 = stream.SMA(
-    #         np.fromiter(self._hist_last_price, float),
-    #         timeperiod=20
-    #         ) - self._hist_last_price[-1]
-        
-    #     self.ma_50 = stream.SMA(
-    #         np.fromiter(self._hist_last_price, float),
-    #         timeperiod=50
-    #         ) - self._hist_last_price[-1]
-        
-    #     self.atr_5 = stream.NATR(
-    #         np.fromiter(self._hist_high_price, float),
-    #         np.fromiter(self._hist_low_price, float),
-    #         np.fromiter(self._hist_last_price, float),
-    #         timeperiod=5
-    #         )
-
-    #     self.atr_10 = stream.NATR(
-    #         np.fromiter(self._hist_high_price, float),
-    #         np.fromiter(self._hist_low_price, float),
-    #         np.fromiter(self._hist_last_price, float),
-    #         timeperiod=5
-    #         )
-        
-    #     self.atr_20 = stream.NATR(
-    #         np.fromiter(self._hist_high_price, float),
-    #         np.fromiter(self._hist_low_price, float),
-    #         np.fromiter(self._hist_last_price, float),
-    #         timeperiod=5
-    #         )
-        
-    #     self.atr_50 = stream.NATR(
-    #         np.fromiter(self._hist_high_price, float),
-    #         np.fromiter(self._hist_low_price, float),
-    #         np.fromiter(self._hist_last_price, float),
-    #         timeperiod=5
-    #         )

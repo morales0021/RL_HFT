@@ -18,7 +18,7 @@ import os
 
 logger = logging.getLogger(__name__)
 
-project_path = '/home/mora/Documents/projects/HFTRL/hftrl/tests/market_making_mt5/'
+project_path = '/home/mora/Documents/projects/HFTRL/experiments/market_making/'
 unit_space = Box(low = -np.inf,
                  high = np.inf,
                  shape = (1,),
@@ -27,7 +27,7 @@ unit_space = Box(low = -np.inf,
 host_redis = '192.168.1.48'
 port_redis = 6379
 
-ray.init(local_mode=False)
+ray.init(local_mode=True)
 
 cfg_mm_mt5 = ConfigMarketMakingEnv(
     action_space = spaces.Dict({
@@ -58,13 +58,6 @@ cfg_mm_mt5 = ConfigMarketMakingEnv(
         "end_hour" : 16,
         "minutes_to_add" : 60
     },
-    rwd_manager={
-        "weights":{
-            "instant_clpnl": 1,
-            "o_pnl": 0.2
-        }
-    },
-    tracker={},
     commission_cfg={},
     redis_host = '192.168.1.48',
     redis_port = 6379,
@@ -108,13 +101,6 @@ cfg_mm_mt5_eval = ConfigMarketMakingEnv(
         "end_hour" : 16,
         "minutes_to_add" : 60
     },
-    rwd_manager={
-        "weights":{
-            "instant_clpnl": 1,
-            "o_pnl": 0.2
-        }
-    },
-    tracker={},
     commission_cfg={},
     redis_host = '192.168.1.48',
     redis_port = 6379,
@@ -140,7 +126,7 @@ config = (
         env = MarketMakingEnv,
         env_config = cfg_mm_mt5.model_dump()
     ).rollouts(
-        num_envs_per_worker = 3,
+        num_envs_per_worker = 2,
         num_rollout_workers = 20,
         batch_mode = "truncate_episodes"
     ).training(

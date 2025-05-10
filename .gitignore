@@ -8,4 +8,7 @@ hftrl.egg-info/
 *.pkl
 
 checkpoint/
+checkpoints/
+checkpoint_new_ray/
 evaluations/
+last_rllib/
